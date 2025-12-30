@@ -1,48 +1,115 @@
 ﻿#if !UNITY_6000_3_OR_NEWER
 
 #if UNITY_EDITOR
+using System;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.IMGUI.Controls;
 using UnityEngine.SceneManagement;
 using UnityEditor.SceneManagement;
+using TEngine.Editor;
 
 namespace TEngine
 {
+    class SceneItem : AdvancedDropdownItem
+    {
+        public string Path { get; }
+
+        public SceneItem(string name, string path) : base(name)
+        {
+            Path = path;
+        }
+    }
+
+    class SceneDropdown : AdvancedDropdown
+    {
+        private Action<string> _onSelect;
+        private Dictionary<string, List<string>> _sceneItems;
+
+        public SceneDropdown(AdvancedDropdownState state, Dictionary<string, List<string>> sceneItems, Action<string> onSelect) : base(state)
+        {
+            _onSelect = onSelect;
+            _sceneItems = sceneItems;
+        }
+
+        protected override AdvancedDropdownItem BuildRoot()
+        {
+            var root = new AdvancedDropdownItem("Root");
+            _sceneItems ??= new Dictionary<string, List<string>>();
+            foreach (var sp in _sceneItems)
+            {
+                var category = new AdvancedDropdownItem(sp.Key);
+                foreach (var path in sp.Value)
+                {
+                    var item = new SceneItem(Path.GetFileNameWithoutExtension(path), path);
+                    category.AddChild(item);
+                }
+                root.AddChild(category);
+            }
+            return root;
+        }
+
+        protected override void ItemSelected(AdvancedDropdownItem item)
+        {
+            base.ItemSelected(item);
+            if (item is SceneItem sceneItem)
+                _onSelect?.Invoke(sceneItem.Path);
+        }
+    }
+    
     /// <summary>
     /// SceneSwitcher
     /// </summary>
     public partial class UnityToolbarExtenderRight
     {
-        private static List<(string sceneName, string scenePath)> m_InitScenes;
-        private static List<(string sceneName, string scenePath)> m_DefaultScenes;
-        private static List<(string sceneName, string scenePath)> m_OtherScenes;
+        private static Dictionary<string, List<string>> m_Scenes;
 
         private static string initScenePath = "Assets/Scenes";
         private static string defaultScenePath = "Assets/AssetRaw/Scenes";
         
+        private static SceneDropdown _sceneDropdown;
+        
         static void UpdateScenes()
         {
             // 获取初始化场景和默认场景
-            m_InitScenes = SceneSwitcher.GetScenesInPath(initScenePath);
-            m_DefaultScenes = SceneSwitcher.GetScenesInPath(defaultScenePath);
+            var initScenes = SceneSwitcher.GetScenesInPath(initScenePath);
+            var defaultScenes = SceneSwitcher.GetScenesInPath(defaultScenePath);
 
             // 获取所有场景路径
             List<(string sceneName, string scenePath)> allScenes = SceneSwitcher.GetAllScenes();
 
             // 排除初始化场景和默认场景，获得其他场景
-            m_OtherScenes = new List<(string sceneName, string scenePath)>(allScenes);
-            m_OtherScenes.RemoveAll(scene =>
-                m_InitScenes.Exists(init => init.scenePath == scene.scenePath) ||
-                m_DefaultScenes.Exists(defaultScene => defaultScene.scenePath == scene.scenePath)
+            var otherScenes = new List<(string sceneName, string scenePath)>(allScenes);
+            otherScenes.RemoveAll(scene =>
+                initScenes.Exists(init => init.scenePath == scene.scenePath) ||
+                defaultScenes.Exists(defaultScene => defaultScene.scenePath == scene.scenePath)
             );
+            
+            m_Scenes ??= new Dictionary<string, List<string>>();
+            m_Scenes.Clear();
+            AddScene("正式场景", initScenes);
+            AddScene("默认场景", defaultScenes);
+            AddScene("其他场景", otherScenes);
+            _sceneDropdown = new SceneDropdown(new AdvancedDropdownState(), m_Scenes, SwitchScene);
+        }
+        
+        static void AddScene(string category, List<(string sceneName, string scenePath)> scenes)
+        {
+            if(scenes.Count == 0) return;
+            var list = new List<string>();
+            foreach (var ss in scenes)
+            {
+                list.Add((ss.scenePath));
+            }
+            m_Scenes.Add(category, list);
         }
 
         static void OnToolbarGUI_SceneSwitch()
         {
             // 如果没有场景，直接返回
-            if (m_InitScenes.Count == 0 && m_DefaultScenes.Count == 0 && m_OtherScenes.Count == 0)
+            if (m_Scenes.Count == 0)
                 return;
 
             // 获取当前场景名称
@@ -55,19 +122,6 @@ namespace TEngine
 
             // 设置按钮宽度为文本的宽度，并限制最大值
             float buttonWidth = textSize.x;
-            
-            // 创建弹出菜单
-            var menu = new GenericMenu();
-
-            // 添加 "初始化路径" 下的场景按钮
-            AddScenesToMenu(m_InitScenes, "初始化场景", menu);
-
-            // 添加 "默认路径" 下的场景按钮
-            AddScenesToMenu(m_DefaultScenes, "默认场景", menu);
-
-            // 添加 "其他路径" 下的场景按钮
-            AddScenesToMenu(m_OtherScenes, "其他场景", menu);
-
             // 自定义GUIStyle
             GUIStyle buttonStyle = new GUIStyle(GUI.skin.button)
             {
@@ -75,9 +129,11 @@ namespace TEngine
             };
 
             // 在工具栏中显示菜单
-            if (GUILayout.Button(currentSceneName, buttonStyle, GUILayout.Width(buttonWidth)))
+            var rect = GUILayoutUtility.GetRect(content, buttonStyle, GUILayout.Width(buttonWidth));
+            if (GUI.Button(rect, content, buttonStyle))
             {
-                menu.ShowAsContext();
+                
+                _sceneDropdown.Show(rect, 150,200);
             }
         }
 
